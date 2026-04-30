@@ -70,9 +70,11 @@ Create a config file at `~/.contabo/config.yaml`:
 
 ```yaml
 # Contabo API Configuration
+# Get these credentials from https://my.contabo.com/api-settings
 client_id: "your_client_id_here"
 client_secret: "your_client_secret_here"
-api_key: "your_api_key_here"
+api_username: "your_api_username_here"
+api_password: "your_api_password_here"
 ```
 
 ### Method 2: Environment Variables
@@ -80,9 +82,10 @@ api_key: "your_api_key_here"
 Set the following environment variables:
 
 ```bash
-export CONTRIBO_CLIENT_ID="your_client_id"
-export CONTRIBO_CLIENT_SECRET="your_client_secret"
-export CONTRIBO_API_KEY="your_api_key"
+export CONTABO_CLIENT_ID="your_client_id"
+export CONTABO_CLIENT_SECRET="your_client_secret"
+export CONTABO_API_USERNAME="your_api_username"
+export CONTABO_API_PASSWORD="your_api_password"
 ```
 
 You can add these to your `~/.bashrc` or `~/.zshrc` to make them persistent.

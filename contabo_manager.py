@@ -10,9 +10,10 @@ Requirements:
 Setup:
     1. Get API credentials from Contabo Control Panel
     2. Set environment variables or create ~/.contabo/config.yaml:
-        CONTRIBO_CLIENT_ID=your_client_id
-        CONTRIBO_CLIENT_SECRET=your_client_secret
-        CONTRIBO_API_KEY=your_api_key
+        CONTABO_CLIENT_ID=your_client_id
+        CONTABO_CLIENT_SECRET=your_client_secret
+        CONTABO_API_USERNAME=your_api_username
+        CONTABO_API_PASSWORD=your_api_password
 """
 
 import os
@@ -31,24 +32,46 @@ class ContaboManager:
     """Main class to interact with Contabo API"""
     
     BASE_URL = "https://api.contabo.com"
+    AUTH_URL = "https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token"
     
-    def __init__(self, client_id=None, client_secret=None, api_key=None, config_path=None):
-        """Initialize with credentials"""
-        self.client_id = client_id or os.getenv("CONTRIBO_CLIENT_ID")
-        self.client_secret = client_secret or os.getenv("CONTRIBO_CLIENT_SECRET")
-        self.api_key = api_key or os.getenv("CONTRIBO_API_KEY")
+    def __init__(self, client_id=None, client_secret=None, api_username=None, api_password=None, access_token=None, config_path=None):
+        """Initialize with credentials per Contabo API documentation:
+        - ClientId (client_id)
+        - ClientSecret (client_secret)
+        - API Username (api_username)
+        - API Password (api_password)
+        Optional: access_token (if you already have a valid token)
+        """
+        self.client_id = client_id or os.getenv("CONTABO_CLIENT_ID")
+        self.client_secret = client_secret or os.getenv("CONTABO_CLIENT_SECRET")
+        self.api_username = api_username or os.getenv("CONTABO_API_USERNAME")
+        self.api_password = api_password or os.getenv("CONTABO_API_PASSWORD")
+        self.access_token = access_token or os.getenv("CONTABO_ACCESS_TOKEN")
         
         # Try loading from config file
-        if not all([self.client_id, self.client_secret, self.api_key]):
+        if not all([self.client_id, self.client_secret, self.api_username, self.api_password]):
             self._load_config(config_path)
         
-        if not all([self.client_id, self.client_secret, self.api_key]):
+        # If access token not provided, try loading from config
+        if not self.access_token:
+            self._load_access_token(config_path)
+        
+        # Support backward compatibility with old api_key field
+        if not self.api_username and os.getenv("CONTRIBO_API_KEY"):
+            print("Warning: CONTRIBO_API_KEY is deprecated. Use CONTABO_API_USERNAME and CONTABO_API_PASSWORD")
+            self.api_username = os.getenv("CONTRIBO_API_KEY")
+        
+        if not all([self.client_id, self.client_secret, self.api_username, self.api_password]):
             raise ValueError(
-                "Missing credentials! Set CONTRIBO_CLIENT_ID, CONTRIBO_CLIENT_SECRET, "
-                "and CONTRIBO_API_KEY environment variables, or create ~/.contabo/config.yaml"
+                "Missing credentials! Set the following environment variables:\n"
+                "  CONTABO_CLIENT_ID - Your API Client ID\n"
+                "  CONTABO_CLIENT_SECRET - Your API Client Secret\n"
+                "  CONTABO_API_USERNAME - Your API Username\n"
+                "  CONTABO_API_PASSWORD - Your API Password\n"
+                "Or create ~/.contabo/config.yaml with these fields.\n"
+                "Optionally set CONTABO_ACCESS_TOKEN if you have a valid token."
             )
         
-        self.access_token = None
         self.token_expiry = None
         self.session = requests.Session()
         self.session.verify = False  # Contabo API may have cert issues
@@ -65,43 +88,107 @@ class ContaboManager:
                     config = yaml.safe_load(f)
                     self.client_id = self.client_id or config.get("client_id")
                     self.client_secret = self.client_secret or config.get("client_secret")
-                    self.api_key = self.api_key or config.get("api_key")
+                    self.api_username = self.api_username or config.get("api_username")
+                    self.api_password = self.api_password or config.get("api_password")
+                    # Backward compatibility with old api_key field
+                    if not self.api_username and config.get("api_key"):
+                        print("Warning: 'api_key' in config is deprecated. Use 'api_username' and 'api_password'")
+                        self.api_username = config.get("api_key")
             except ImportError:
                 print("PyYAML not installed. Install with: pip install PyYAML")
                 
+    def _load_access_token(self, config_path=None):
+        """Load access token from config file if available"""
+        if config_path is None:
+            config_path = Path.home() / ".contabo" / "config.yaml"
+        
+        if Path(config_path).exists():
+            try:
+                import yaml
+                with open(config_path) as f:
+                    config = yaml.safe_load(f)
+                    self.access_token = self.access_token or config.get("access_token")
+            except:
+                pass
+                
     def authenticate(self):
-        """Get OAuth2 access token from Contabo"""
-        url = f"{self.BASE_URL}/oauth/v1/token"
+        """Get OAuth2 access token from Contabo Keycloak server."""
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
         }
+        
+        # Per Contabo docs: use grant_type=password with all 4 credentials
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-            "grant_type": "client_credentials",
+            "username": self.api_username,
+            "password": self.api_password,
+            "grant_type": "password",
         }
         
         try:
-            response = self.session.post(url, headers=headers, data=data, timeout=30)
+            response = self.session.post(self.AUTH_URL, headers=headers, data=data, timeout=30)
             response.raise_for_status()
             token_data = response.json()
             self.access_token = token_data["access_token"]
-            # Store token for subsequent requests
+            
+            # Save token to config for future use
+            self._save_access_token()
+            
+            # Update session headers for subsequent API requests
             self.session.headers.update({
                 "Authorization": f"Bearer {self.access_token}",
-                "x-api-key": self.api_key,
                 "Accept": "application/json",
             })
+            
+            print("Authentication successful.")
             return True
         except requests.exceptions.RequestException as e:
             print(f"Authentication failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response: {e.response.text}")
             return False
+    
+    def _save_access_token(self):
+        """Save access token to config file"""
+        config_path = Path.home() / ".contabo" / "config.yaml"
+        try:
+            import yaml
+            config = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+            
+            config["access_token"] = self.access_token
+            
+            with open(config_path, "w") as f:
+                yaml.dump(config, f)
+        except:
+            pass
     
     def _request(self, method, endpoint, **kwargs):
         """Make authenticated API request"""
         if not self.access_token:
-            self.authenticate()
+            if not self.authenticate():
+                print("Failed to authenticate. Cannot make request.")
+                return None
+        
+        import uuid
+        
+        # Set headers with current token
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+            "x-request-id": str(uuid.uuid4()).upper(),
+        }
+        
+        # Merge with any headers provided in kwargs
+        if "headers" in kwargs:
+            headers.update(kwargs["headers"])
+            kwargs["headers"] = headers
+        else:
+            kwargs["headers"] = headers
         
         url = f"{self.BASE_URL}{endpoint}"
         try:
@@ -135,12 +222,15 @@ class ContaboManager:
         
         for inst in instances:
             print(f"\nID: {inst.get('instanceId')}")
-            print(f"  Name: {inst.get('name', 'N/A')}")
+            print(f"  Name: {inst.get('displayName', inst.get('name', 'N/A'))}")
             print(f"  Status: {inst.get('status', 'N/A')}")
             print(f"  IP: {inst.get('ipConfig', {}).get('v4', {}).get('ip', 'N/A')}")
-            print(f"  Region: {inst.get('region', 'N/A')}")
-            print(f"  Product: {inst.get('product', {}).get('name', 'N/A')}")
-            print(f"  OS: {inst.get('image', {}).get('name', 'N/A')}")
+            print(f"  Region: {inst.get('regionName', inst.get('region', 'N/A'))}")
+            print(f"  Product: {inst.get('productName', 'N/A')}")
+            print(f"  OS: {inst.get('osType', 'N/A')}")
+            print(f"  RAM: {inst.get('ramMb', 0) // 1024} GB")
+            print(f"  CPU: {inst.get('cpuCores', 'N/A')} cores")
+            print(f"  Disk: {inst.get('diskMb', 0) // 1024} GB")
         
         # Pagination info
         if "pagination" in data:
@@ -292,20 +382,18 @@ class ContaboManager:
             print(f"  Rules: {len(rule.get('rules', []))} configured")
     
     # ==================== Usage/Metrics ====================
+    # Note: /v1/compute/usage endpoint does not exist in Contabo API v1
+    # The API does not expose usage/limits via a standard endpoint
     
     def get_usage(self):
-        """Get resource usage/limits"""
+        """Get resource usage/limits - Not available in current API version"""
         print(f"\n{'='*80}")
         print("RESOURCE USAGE")
         print('='*80)
-        
-        data = self._request("GET", "/v1/compute/usage")
-        if not data or "data" not in data:
-            print("Could not fetch usage data.")
-            return
-        
-        usage = data["data"]
-        print(json.dumps(usage, indent=2))
+        print("\nNote: The Contabo API v1 does not provide a usage/limits endpoint.")
+        print("You can check your resource usage at: https://my.contabo.com/")
+        print("\nAlternatively, you can check instance details for individual resource info:")
+        self.list_instances()
 
 
 def main():
@@ -327,12 +415,14 @@ Setup:
   Create ~/.contabo/config.yaml with:
     client_id: "your_client_id"
     client_secret: "your_client_secret"
-    api_key: "your_api_key"
+    api_username: "your_api_username"
+    api_password: "your_api_password"
 
   Or set environment variables:
-    export CONTRIBO_CLIENT_ID=your_client_id
-    export CONTRIBO_CLIENT_SECRET=your_client_secret
-    export CONTRIBO_API_KEY=your_api_key
+    export CONTABO_CLIENT_ID="your_client_id"
+    export CONTABO_CLIENT_SECRET="your_client_secret"
+    export CONTABO_API_USERNAME="your_api_username"
+    export CONTABO_API_PASSWORD="your_api_password"
         """
     )
     
