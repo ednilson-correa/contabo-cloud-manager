@@ -202,22 +202,46 @@ class ContaboManager:
             print(f"Request failed: {e}")
             return None
     
+    def _request_all_pages(self, method, endpoint, params=None):
+        """Make paginated requests and return all results"""
+        if params is None:
+            params = {}
+        
+        all_data = []
+        page = 1
+        size = params.get("size", 20)
+        
+        while True:
+            params["page"] = page
+            data = self._request(method, endpoint, params=params)
+            
+            if not data or "data" not in data:
+                break
+            
+            all_data.extend(data["data"])
+            
+            # Check pagination
+            pagination = data.get("pagination", data.get("_pagination", {}))
+            total_pages = pagination.get("pages", pagination.get("totalPages", 1))
+            
+            if page >= total_pages:
+                break
+            page += 1
+        
+        return all_data
+    
     # ==================== Compute Instances (VMs) ====================
     
-    def list_instances(self, page=1, size=20):
-        """List all VPS instances"""
+    def list_instances(self):
+        """List all VPS instances (auto-fetches all pages)"""
         print(f"\n{'='*80}")
-        print(f"VPS INSTANCES (Page {page})")
+        print(f"VPS INSTANCES (All Pages)")
         print('='*80)
         
-        data = self._request("GET", "/v1/compute/instances", params={"page": page, "size": size})
-        if not data or "data" not in data:
-            print("No instances found or error occurred.")
-            return
+        instances = self._request_all_pages("GET", "/v1/compute/instances", params={"size": 100})
         
-        instances = data["data"]
         if not instances:
-            print("No instances found.")
+            print("No instances found or error occurred.")
             return
         
         for inst in instances:
@@ -232,10 +256,7 @@ class ContaboManager:
             print(f"  CPU: {inst.get('cpuCores', 'N/A')} cores")
             print(f"  Disk: {inst.get('diskMb', 0) // 1024} GB")
         
-        # Pagination info
-        if "pagination" in data:
-            p = data["pagination"]
-            print(f"\nPage {p.get('page', 1)} of {p.get('pages', 1)} (Total: {p.get('total', 0)})")
+        print(f"\nTotal instances: {len(instances)}")
     
     def get_instance(self, instance_id):
         """Get details of a specific instance"""
@@ -302,27 +323,29 @@ class ContaboManager:
     # ==================== Snapshots ====================
     
     def list_snapshots(self, instance_id=None):
-        """List snapshots"""
+        """List snapshots (auto-fetches all pages)"""
         print(f"\n{'='*80}")
-        print("SNAPSHOTS")
+        print("SNAPSHOTS (All Pages)")
         print('='*80)
         
-        params = {}
+        params = {"size": 100}
         if instance_id:
             params["instanceId"] = instance_id
         
-        data = self._request("GET", "/v1/compute/snapshots", params=params)
-        if not data or "data" not in data:
+        snapshots = self._request_all_pages("GET", "/v1/compute/snapshots", params=params)
+        
+        if not snapshots:
             print("No snapshots found.")
             return
         
-        snapshots = data["data"]
         for snap in snapshots:
             print(f"\nID: {snap.get('snapshotId')}")
             print(f"  Name: {snap.get('name', 'N/A')}")
             print(f"  Instance: {snap.get('instanceId', 'N/A')}")
             print(f"  Status: {snap.get('status', 'N/A')}")
             print(f"  Size: {snap.get('size', 'N/A')} GB")
+        
+        print(f"\nTotal snapshots: {len(snapshots)}")
     
     def create_snapshot(self, instance_id, name=None):
         """Create a snapshot of an instance"""
@@ -343,38 +366,40 @@ class ContaboManager:
     # ==================== Storage ====================
     
     def list_storage(self):
-        """List storage volumes"""
+        """List storage volumes (auto-fetches all pages)"""
         print(f"\n{'='*80}")
-        print("STORAGE VOLUMES")
+        print("STORAGE VOLUMES (All Pages)")
         print('='*80)
         
-        data = self._request("GET", "/v1/compute/storages")
-        if not data or "data" not in data:
+        volumes = self._request_all_pages("GET", "/v1/compute/storages", params={"size": 100})
+        
+        if not volumes:
             print("No storage volumes found.")
             return
         
-        volumes = data["data"]
         for vol in volumes:
             print(f"\nID: {vol.get('storageId')}")
             print(f"  Name: {vol.get('name', 'N/A')}")
             print(f"  Size: {vol.get('size', 'N/A')} GB")
             print(f"  Status: {vol.get('status', 'N/A')}")
             print(f"  Instance: {vol.get('instanceId', 'Not attached')}")
+        
+        print(f"\nTotal storage volumes: {len(volumes)}")
     
     # ==================== Firewall Management ====================
     
     def list_firewalls(self):
-        """List all firewall rules"""
+        """List all firewall rules (auto-fetches all pages)"""
         print(f"\n{'='*80}")
-        print("FIREWALL RULES")
+        print("FIREWALL RULES (All Pages)")
         print('='*80)
         
-        data = self._request("GET", "/v1/firewalls")
-        if not data or "data" not in data:
+        firewalls = self._request_all_pages("GET", "/v1/firewalls", params={"size": 100})
+        
+        if not firewalls:
             print("No firewall rules found.")
             return
         
-        firewalls = data["data"]
         for fw in firewalls:
             print(f"\nFirewall ID: {fw.get('firewallId')}")
             print(f"  Name: {fw.get('name', 'N/A')}")
@@ -412,6 +437,7 @@ class ContaboManager:
                         for ip in ipv6_list:
                             print(f"        - {ip}")
             
+        print(f"\nTotal firewalls: {len(firewalls)}")
         return firewalls
     
     def get_firewall(self, firewall_id):
