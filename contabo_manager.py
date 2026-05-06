@@ -361,25 +361,181 @@ class ContaboManager:
             print(f"  Status: {vol.get('status', 'N/A')}")
             print(f"  Instance: {vol.get('instanceId', 'Not attached')}")
     
-    # ==================== Networking ====================
+    # ==================== Firewall Management ====================
     
     def list_firewalls(self):
-        """List firewall rules"""
+        """List all firewall rules"""
         print(f"\n{'='*80}")
         print("FIREWALL RULES")
         print('='*80)
         
-        data = self._request("GET", "/v1/compute/firewalls")
+        data = self._request("GET", "/v1/firewalls")
         if not data or "data" not in data:
             print("No firewall rules found.")
             return
         
-        rules = data["data"]
-        for rule in rules:
-            print(f"\nID: {rule.get('firewallId')}")
-            print(f"  Name: {rule.get('name', 'N/A')}")
-            print(f"  Instance: {rule.get('instanceId', 'N/A')}")
-            print(f"  Rules: {len(rule.get('rules', []))} configured")
+        firewalls = data["data"]
+        for fw in firewalls:
+            print(f"\nFirewall ID: {fw.get('firewallId')}")
+            print(f"  Name: {fw.get('name', 'N/A')}")
+            print(f"  Status: {fw.get('status', 'N/A')}")
+            print(f"  Description: {fw.get('description', 'N/A')}")
+            
+            # Show associated instances
+            if "instances" in fw and fw["instances"]:
+                print(f"  Associated Instances:")
+                for inst in fw["instances"]:
+                    print(f"    - {inst.get('displayName', inst.get('name', 'N/A'))} (ID: {inst.get('instanceId')})")
+            
+            # Show inbound rules
+            if "rules" in fw and "inbound" in fw["rules"]:
+                print(f"  Inbound Rules:")
+                for i, rule in enumerate(fw["rules"]["inbound"], 1):
+                    print(f"    Rule {i}: {rule.get('displayName', 'N/A')}")
+                    print(f"      Action: {rule.get('action', 'N/A')}")
+                    print(f"      Protocol: {rule.get('protocol', 'all')}")
+                    print(f"      Status: {rule.get('status', 'N/A')}")
+                    
+                    # Show source IPs
+                    src_cidr = rule.get("srcCidr", {})
+                    ipv4_list = src_cidr.get("ipv4", [])
+                    if ipv4_list:
+                        print(f"      Allowed IPv4 ({len(ipv4_list)}):")
+                        for ip in ipv4_list:
+                            print(f"        - {ip}")
+                    else:
+                        print(f"      Allowed IPv4: (none)")
+                    
+                    ipv6_list = src_cidr.get("ipv6", [])
+                    if ipv6_list:
+                        print(f"      Allowed IPv6 ({len(ipv6_list)}):")
+                        for ip in ipv6_list:
+                            print(f"        - {ip}")
+            
+        return firewalls
+    
+    def get_firewall(self, firewall_id):
+        """Get details of a specific firewall"""
+        print(f"\n{'='*80}")
+        print(f"FIREWALL DETAILS: {firewall_id}")
+        print('='*80)
+        
+        data = self._request("GET", f"/v1/firewalls/{firewall_id}")
+        if not data or "data" not in data:
+            return None
+        
+        fw = data["data"]
+        print(json.dumps(fw, indent=2))
+        return fw
+    
+    def add_ip_to_firewall(self, firewall_id, ip_address, rule_name="allow-all-ips-opservices"):
+        """Add an IP address to a firewall rule's allow list"""
+        print(f"Adding IP {ip_address} to firewall {firewall_id}, rule '{rule_name}'...")
+        
+        # First, get current firewall config
+        fw = self.get_firewall(firewall_id)
+        if not fw:
+            print("Failed to get firewall details.")
+            return False
+        
+        # Find the rule
+        rules = fw.get("rules", {})
+        inbound = rules.get("inbound", [])
+        
+        target_rule = None
+        for rule in inbound:
+            if rule.get("displayName") == rule_name or rule.get("displayName") == "allow-all-ips-opservices":
+                target_rule = rule
+                break
+        
+        if not target_rule:
+            print(f"Rule '{rule_name}' not found. Available rules:")
+            for r in inbound:
+                print(f"  - {r.get('displayName', 'N/A')}")
+            return False
+        
+        # Add IP to the rule's IPv4 list
+        src_cidr = target_rule.get("srcCidr", {})
+        ipv4_list = src_cidr.get("ipv4", [])
+        
+        # Ensure IP has /32 suffix
+        if "/" not in ip_address:
+            ip_address = f"{ip_address}/32"
+        
+        if ip_address in ipv4_list:
+            print(f"IP {ip_address} already in the allow list.")
+            return True
+        
+        ipv4_list.append(ip_address)
+        target_rule["srcCidr"]["ipv4"] = ipv4_list
+        
+        # Update the firewall via API
+        # Build the full rules object for the update
+        update_data = {"rules": {"inbound": inbound}}
+        
+        print(f"Updating firewall with new IP list ({len(ipv4_list)} IPs)...")
+        result = self._request("PUT", f"/v1/firewalls/{firewall_id}", json=update_data)
+        
+        if result:
+            print(f"Successfully added {ip_address} to firewall.")
+            return True
+        else:
+            print("Failed to update firewall.")
+            return False
+    
+    def remove_ip_from_firewall(self, firewall_id, ip_address, rule_name="allow-all-ips-opservices"):
+        """Remove an IP address from a firewall rule's allow list"""
+        print(f"Removing IP {ip_address} from firewall {firewall_id}, rule '{rule_name}'...")
+        
+        # First, get current firewall config
+        fw = self.get_firewall(firewall_id)
+        if not fw:
+            print("Failed to get firewall details.")
+            return False
+        
+        # Find the rule
+        rules = fw.get("rules", {})
+        inbound = rules.get("inbound", [])
+        
+        target_rule = None
+        for rule in inbound:
+            if rule.get("displayName") == rule_name or rule.get("displayName") == "allow-all-ips-opservices":
+                target_rule = rule
+                break
+        
+        if not target_rule:
+            print(f"Rule '{rule_name}' not found.")
+            return False
+        
+        # Remove IP from the rule's IPv4 list
+        src_cidr = target_rule.get("srcCidr", {})
+        ipv4_list = src_cidr.get("ipv4", [])
+        
+        # Ensure IP has /32 suffix for comparison
+        if "/" not in ip_address:
+            ip_to_remove = f"{ip_address}/32"
+        else:
+            ip_to_remove = ip_address
+        
+        if ip_to_remove not in ipv4_list:
+            print(f"IP {ip_to_remove} not found in the allow list.")
+            return False
+        
+        ipv4_list.remove(ip_to_remove)
+        target_rule["srcCidr"]["ipv4"] = ipv4_list
+        
+        # Update the firewall via API
+        update_data = {"rules": {"inbound": inbound}}
+        
+        print(f"Updating firewall with new IP list ({len(ipv4_list)} IPs)...")
+        result = self._request("PUT", f"/v1/firewalls/{firewall_id}", json=update_data)
+        
+        if result:
+            print(f"Successfully removed {ip_to_remove} from firewall.")
+            return True
+        else:
+            print("Failed to update firewall.")
+            return False
     
     # ==================== Usage/Metrics ====================
     # Note: /v1/compute/usage endpoint does not exist in Contabo API v1
@@ -460,7 +616,23 @@ Setup:
     subparsers.add_parser("storage", help="List storage volumes")
     
     # Firewall commands
-    subparsers.add_parser("firewalls", help="List firewall rules")
+    firewall_parser = subparsers.add_parser("firewalls", help="Manage firewall rules")
+    firewall_subparsers = firewall_parser.add_subparsers(dest="firewall_command")
+    
+    firewall_subparsers.add_parser("list", help="List all firewalls")
+    
+    show_parser = firewall_subparsers.add_parser("show", help="Show firewall details")
+    show_parser.add_argument("firewall_id", help="Firewall ID")
+    
+    add_ip_parser = firewall_subparsers.add_parser("add-ip", help="Add IP to firewall allow list")
+    add_ip_parser.add_argument("firewall_id", help="Firewall ID")
+    add_ip_parser.add_argument("ip_address", help="IP address to add (e.g., 1.2.3.4)")
+    add_ip_parser.add_argument("--rule", default="allow-all-ips-opservices", help="Rule name (default: allow-all-ips-opservices)")
+    
+    remove_ip_parser = firewall_subparsers.add_parser("remove-ip", help="Remove IP from firewall allow list")
+    remove_ip_parser.add_argument("firewall_id", help="Firewall ID")
+    remove_ip_parser.add_argument("ip_address", help="IP address to remove (e.g., 1.2.3.4)")
+    remove_ip_parser.add_argument("--rule", default="allow-all-ips-opservices", help="Rule name (default: allow-all-ips-opservices)")
     
     # Usage command
     subparsers.add_parser("usage", help="Show resource usage")
@@ -499,7 +671,14 @@ Setup:
     elif args.command == "storage":
         manager.list_storage()
     elif args.command == "firewalls":
-        manager.list_firewalls()
+        if args.firewall_command == "list" or not args.firewall_command:
+            manager.list_firewalls()
+        elif args.firewall_command == "show":
+            manager.get_firewall(args.firewall_id)
+        elif args.firewall_command == "add-ip":
+            manager.add_ip_to_firewall(args.firewall_id, args.ip_address, args.rule)
+        elif args.firewall_command == "remove-ip":
+            manager.remove_ip_from_firewall(args.firewall_id, args.ip_address, args.rule)
     elif args.command == "usage":
         manager.get_usage()
     else:
